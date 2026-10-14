@@ -1,0 +1,46 @@
+{
+  "name": "game-lobby",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A unified local game library and launcher",
+  "main": "out/main/index.js",
+  "scripts": {
+    "predev": "npx install-electron --no",
+    "dev": "electron-vite dev",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && electron-vite build",
+    "dist": "npm run build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.12",
+    "better-sqlite3": "^12.2.0",
+    "fuse.js": "^7.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.16.5",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "app.gamelobby.desktop",
+    "productName": "Game Lobby",
+    "asarUnpack": ["node_modules/better-sqlite3/**"],
+    "files": ["out/**/*", "package.json"],
+    "win": { "target": ["nsis", "portable"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}

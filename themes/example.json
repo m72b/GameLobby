@@ -1,0 +1,13 @@
+{
+  "name": "Forest Night",
+  "bg": "#101713",
+  "surface": "#19231d",
+  "surface2": "#23352a",
+  "accent": "#8adf9a",
+  "text": "#f1f5ef",
+  "muted": "#9aa99e",
+  "radius": "12px",
+  "gap": "9px",
+  "font": "Inter, Segoe UI, sans-serif",
+  "hover": "glow"
+}
