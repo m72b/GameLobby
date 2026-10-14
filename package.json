@@ -1,6 +1,7 @@
 {
   "name": "game-lobby",
   "version": "0.1.0",
+  "license": "GPL-3.0-only",
   "private": true,
   "description": "A unified local game library and launcher",
   "main": "out/main/index.js",

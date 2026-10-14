@@ -47,7 +47,7 @@ The SQLite database is managed by `src/main/db/index.ts` and is stored in Electr
 
 ## License
 
-Game Lobby uses a custom source-available license. It permits private modification and use, while restricting redistribution. Since the repository is public, GitHub users can still view and fork it through GitHub's service under GitHub's terms. See [`LICENSE`](LICENSE) for the full terms. This is not an OSI-approved open-source license.
+Game Lobby is licensed under the GNU General Public License v3.0 only (GPL-3.0-only). You may use, modify, and redistribute the project under that license. When you distribute a modified version, GPL-3.0 requires you to preserve the same freedoms and provide the corresponding source code. See [`LICENSE`](LICENSE) for the complete terms. Third-party dependencies retain their own licenses.
 
 ## Project status
 
