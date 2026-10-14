@@ -40,15 +40,35 @@ export function allGames(): Game[] {
 
 function persistGame(game: Partial<Game> & { id: string }) {
   const old = database().prepare('SELECT * FROM games WHERE id=?').get(game.id) as any
-  const seconds = game.playtimeSeconds ?? (game.playtimeMinutes === undefined ? old?.playtimeSeconds ?? (old?.playtimeMinutes || 0) * 60 : game.playtimeMinutes * 60)
+  const toNumber = (value: unknown, fallback: number) => {
+    const number = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(number) ? number : fallback
+  }
+  const toStringOrNull = (value: unknown, fallback: string | null) => {
+    if (typeof value === 'string') return value
+    if (value == null) return fallback
+    if (typeof value === 'number' || typeof value === 'bigint') return String(value)
+    if (typeof value === 'object' && 'URL' in value && typeof value.URL === 'string') return value.URL
+    return fallback
+  }
+  const previousSeconds = toNumber(old?.playtimeSeconds, toNumber(old?.playtimeMinutes, 0) * 60)
+  const importedSeconds = game.playtimeSeconds ?? (game.playtimeMinutes === undefined ? previousSeconds : toNumber(game.playtimeMinutes, 0) * 60)
+  const seconds = toNumber(importedSeconds, previousSeconds)
+  const previousTitle = toStringOrNull(old?.title, 'Untitled') || 'Untitled'
+  const previousStore = toStringOrNull(old?.store, 'Custom') || 'Custom'
+  const cover = toStringOrNull(game.cover, toStringOrNull(old?.cover, null))
+  const defaultCover = toStringOrNull(game.defaultCover, toStringOrNull(old?.defaultCover, null))
+  const genre = toStringOrNull(game.genre, toStringOrNull(old?.genre, null))
+  const lastPlayed = game.lastPlayed == null ? old?.lastPlayed ?? null : toNumber(game.lastPlayed, 0)
+  const currentRoutes = Array.isArray(game.routes) ? game.routes : JSON.parse(old?.routes || '[]')
   const row = {
-    id: game.id, title: game.title || old?.title || 'Untitled', cover: game.cover ?? old?.cover ?? null,
-    defaultCover: game.defaultCover ?? old?.defaultCover ?? null, store: game.store || old?.store || 'Custom',
-    genre: game.genre ?? old?.genre ?? null, playtimeSeconds: seconds, playtimeMinutes: Math.floor(seconds / 60),
-    lastPlayed: game.lastPlayed ?? old?.lastPlayed ?? null,
-    hidden: game.hidden === undefined ? !!old?.hidden : +game.hidden,
-    favorite: game.favorite === undefined ? !!old?.favorite : +game.favorite,
-    routes: JSON.stringify(game.routes ?? JSON.parse(old?.routes || '[]'))
+    id: String(game.id), title: toStringOrNull(game.title, previousTitle) || previousTitle, cover,
+    defaultCover, store: toStringOrNull(game.store, previousStore) || previousStore,
+    genre, playtimeSeconds: seconds, playtimeMinutes: Math.floor(seconds / 60),
+    lastPlayed: lastPlayed == null ? null : toNumber(lastPlayed, 0),
+    hidden: game.hidden === undefined ? Number(!!old?.hidden) : Number(!!game.hidden),
+    favorite: game.favorite === undefined ? Number(!!old?.favorite) : Number(!!game.favorite),
+    routes: JSON.stringify(currentRoutes)
   }
   database().prepare(`INSERT INTO games(id,title,cover,defaultCover,store,genre,playtimeMinutes,playtimeSeconds,lastPlayed,hidden,favorite,routes)
     VALUES(@id,@title,@cover,@defaultCover,@store,@genre,@playtimeMinutes,@playtimeSeconds,@lastPlayed,@hidden,@favorite,@routes)
