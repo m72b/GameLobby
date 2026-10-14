@@ -3,11 +3,73 @@ import { join } from 'node:path'
 import type { Game } from '../../shared/types'
 import type { Importer } from './types'
 
-function steamRoots():string[] {
-  const roots=new Set<string>()
-  for(const p of ['C:/Program Files (x86)/Steam','C:/Program Files/Steam','D:/Steam']) if(existsSync(p)) roots.add(p)
-  try { const key='HKCU\\Software\\Valve\\Steam'; const out=require('node:child_process').execFileSync('reg',['query',key,'/v','SteamPath'],{encoding:'utf8'}); const m=out.match(/SteamPath\s+REG_SZ\s+(.+)/i);if(m)roots.add(m[1].trim().replaceAll('\\','/')) } catch {}
-  const base=[...roots]; for(const root of base){try{const text=readFileSync(join(root,'steamapps','libraryfolders.vdf'),'utf8');for(const m of text.matchAll(/"path"\s+"([^"]+)"/g))roots.add(m[1].replaceAll('\\','/'))}catch{}}
+function steamRoots(): string[] {
+  const roots = new Set<string>()
+  for (const path of ['C:/Program Files (x86)/Steam', 'C:/Program Files/Steam', 'D:/Steam']) if (existsSync(path)) roots.add(path)
+  try {
+    const output = require('node:child_process').execFileSync('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { encoding: 'utf8' })
+    const match = output.match(/SteamPath\s+REG_SZ\s+(.+)/i)
+    if (match) roots.add(match[1].trim().replaceAll('\\', '/'))
+  } catch { /* Steam is optional. */ }
+  for (const root of [...roots]) {
+    try {
+      const text = readFileSync(join(root, 'steamapps', 'libraryfolders.vdf'), 'utf8')
+      for (const match of text.matchAll(/"path"\s+"([^"]+)"/g)) roots.add(match[1].replaceAll('\\', '/'))
+    } catch { /* Older libraryfolders.vdf files may not exist. */ }
+  }
   return [...roots]
 }
-export const steamImporter:Importer={id:'steam',name:'Steam',async scan(){const games:Game[]=[];for(const root of steamRoots()){const folder=join(root,'steamapps');if(!existsSync(folder))continue;for(const file of readdirSync(folder).filter(x=>/^appmanifest_\d+\.acf$/i.test(x))){try{const text=readFileSync(join(folder,file),'utf8');const appid=text.match(/"appid"\s+"(\d+)"/)?.[1],title=text.match(/"name"\s+"([^"]+)"/)?.[1],installdir=text.match(/"installdir"\s+"([^"]+)"/)?.[1];if(!appid||!title)continue;games.push({id:`steam:${appid}`,title,store:'Steam',cover:`https://cdn.akamai.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`,defaultCover:`https://cdn.akamai.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`,playtimeMinutes:0,hidden:false,favorite:false,routes:[{sourceId:'steam',store:'Steam',appId:appid,launchTarget:`steam://run/${appid}`,installPath:installdir?join(folder,'common',installdir):undefined}]})}catch{}}}return games}}
+
+export const steamImporter: Importer = {
+  id: 'steam-installed', name: 'Steam (installed)',
+  async scan() {
+    const games: Game[] = []
+    for (const root of steamRoots()) {
+      const folder = join(root, 'steamapps')
+      if (!existsSync(folder)) continue
+      for (const file of readdirSync(folder).filter(name => /^appmanifest_\d+\.acf$/i.test(name))) {
+        try {
+          const text = readFileSync(join(folder, file), 'utf8')
+          const appId = text.match(/"appid"\s+"(\d+)"/)?.[1]
+          const title = text.match(/"name"\s+"([^"]+)"/)?.[1]
+          const installDir = text.match(/"installdir"\s+"([^"]+)"/)?.[1]
+          if (!appId || !title) continue
+          const cover = `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/library_600x900.jpg`
+          games.push({
+            id: `steam:${appId}`, title, store: 'Steam', cover, defaultCover: cover,
+            playtimeMinutes: 0, hidden: false, favorite: false,
+            routes: [{ sourceId: 'steam', store: 'Steam', appId, launchTarget: `steam://run/${appId}`, installPath: installDir ? join(folder, 'common', installDir) : undefined, installed: true }]
+          })
+        } catch { /* Ignore malformed manifests and keep scanning. */ }
+      }
+    }
+    return games
+  }
+}
+
+interface SteamOwnedGame { appid: number; name?: string; playtime_forever?: number; rtime_last_played?: number }
+export const steamOwnedImporter = {
+  id: 'steam-owned', name: 'Steam (owned)',
+  async scan(steamId: string, apiKey: string): Promise<Game[]> {
+    if (!/^\d{17}$/.test(steamId)) throw new Error('Steam ID must be a 17-digit SteamID64.')
+    const url = new URL('https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/')
+    url.search = new URLSearchParams({ key: apiKey, steamid: steamId, include_appinfo: 'true', include_played_free_games: 'true' }).toString()
+    const response = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+    if (!response.ok) throw new Error(`Steam returned HTTP ${response.status}.`)
+    const body = await response.json() as { response?: { games?: SteamOwnedGame[] } }
+    if (!body.response || !Array.isArray(body.response.games)) throw new Error('Steam did not return an owned-games list. Check the API key and profile game-privacy settings.')
+    return body.response.games.flatMap(game => {
+      const appId = String(game.appid)
+      const title = game.name?.trim()
+      if (!appId || !title) return []
+      const cover = `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/library_600x900.jpg`
+      return [{
+        id: `steam:${appId}`, title, store: 'Steam' as const, cover, defaultCover: cover,
+        playtimeMinutes: Math.max(0, game.playtime_forever || 0),
+        lastPlayed: game.rtime_last_played ? game.rtime_last_played * 1000 : undefined,
+        hidden: false, favorite: false,
+        routes: [{ sourceId: 'steam', store: 'Steam' as const, appId, launchTarget: `steam://run/${appId}`, owned: true, installed: false, playtimeMinutes: Math.max(0, game.playtime_forever || 0), lastPlayed: game.rtime_last_played ? game.rtime_last_played * 1000 : undefined }]
+      }]
+    })
+  }
+}

@@ -8,16 +8,35 @@ Game Lobby is an independent community project with its own name, codebase, and 
 
 - A dark, responsive, virtualized poster library with search, store filters, game details, and launch actions.
 - Local SQLite storage for games, launch routes, settings, emulator profiles, and theme data.
-- Installed-game discovery for Steam and Epic on Windows.
+- Store library discovery with optional ownership imports for Steam, Epic, and GOG.
+- Unified duplicate entries with a per-store “Play from” choice.
+- Windows playtime tracking for launched games and sorting by last played or playtime.
 - Custom cover management and JSON library backup and restore.
 - A separate settings window for library sources, appearance, emulator profiles, and remote MyUI themes.
 - A narrow preload API between the Electron renderer and main process.
 
 ## Library and emulator support
 
-The current built-in scanners read local Steam `appmanifest_*.acf` files and Epic `.item` manifests. They discover installed games and use store launch routes where available. Game Lobby does not request store credentials or currently retrieve a full catalog of games that are owned but not installed. Other storefronts may appear in the interface, but their importers are not yet implemented.
+### Store libraries
 
-Emulator profiles can store an executable path, launch arguments, ROM folders, and supported file extensions. Automatic ROM discovery and launching are not yet wired into the current build.
+The Windows scanners support these sources:
+
+| Store | Current import method |
+| --- | --- |
+| Steam | Installed `appmanifest_*.acf` files; optional owned-game import through Steam Web API |
+| Epic Games | Installed `.item` manifests; optional owned-game import through the Legendary CLI |
+| GOG | Owned titles from the local GOG Galaxy database, with installed state when available |
+| EA app, Battle.net, Ubisoft Connect, Amazon Games | Best-effort installed-game discovery from Windows registry and uninstall records |
+| itch.io | Installed games found in the local itch app folders |
+| Xbox / Microsoft Store | Best-effort installed game-package scan; package-name matching can miss games |
+
+To import Steam ownership, enter a SteamID64 and Web API key in **Settings → Libraries**. Steam must make the profile's game details public for the API to return the library. The key is stored using Windows secure storage. For Epic ownership, install and sign in to [Legendary](https://github.com/legendary-gl/legendary), then select its executable in the same settings page. GOG Galaxy is auto-detected when possible; otherwise, select its database file.
+
+Scanning merges exact normalized title matches into one library entry and combines their launch routes. Open a game's detail panel to choose **Play from** a particular store. Installed discovery for the other listed stores is local-only; those integrations do not retrieve complete online account catalogs.
+
+Windows playtime tracking looks for a running process inside the selected game's install folder while Game Lobby is open. It records elapsed time and last-played time locally. Routes without a usable install folder can still update last-played when launched, but cannot be process-tracked.
+
+Emulator profiles can store an executable path, launch arguments, ROM folders, and supported file extensions. Automatic ROM discovery and emulator launching are not yet wired into the current build.
 
 ## Extensions
 
@@ -43,7 +62,7 @@ Theme JSON example: [`themes/example.json`](themes/example.json). CSS themes sho
 
 ## Local data and privacy
 
-The SQLite database is managed by `src/main/db/index.ts` and is stored in Electron's per-user application data directory. It uses write-ahead logging and foreign-key checks. JSON backups include game metadata, launch routes, settings, and emulator profiles. The app's built-in local scanners do not require store account credentials.
+The SQLite database is managed by `src/main/db/index.ts` and is stored in Electron's per-user application data directory. It uses write-ahead logging and foreign-key checks. JSON backups include game metadata, launch routes, settings, and emulator profiles. Only the optional Steam ownership import uses a credential entered in Game Lobby; the Steam API key is encrypted with Windows secure storage. Epic ownership uses the separately installed Legendary client and its existing sign-in.
 
 ## License
 
@@ -51,7 +70,7 @@ Game Lobby is licensed under the GNU General Public License v3.0 only (GPL-3.0-o
 
 ## Project status
 
-Game Lobby is an early-stage reconstruction. Steam and Epic local discovery, the core library interface, custom covers, local backups, emulator profile storage, and remote token-based themes are represented in the current build. Additional storefront importers, ROM scanning, richer metadata services, and broader plugin support remain future work.
+Game Lobby is an early-stage independent project. Steam, Epic, GOG, and best-effort local discovery for the listed Windows storefronts are available, with ownership coverage varying by source as described above. Broader account-catalog imports, ROM scanning and launching, richer metadata services, and executable plugin support remain future work.
 
 ## Acknowledgements
 
