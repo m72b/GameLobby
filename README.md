@@ -2,7 +2,7 @@
 
 **Game Lobby** is a local-first desktop app for bringing installed PC games and emulator libraries together in one browsable library. It pairs a cover-art grid with store-aware launch routes, local metadata, custom covers, collections, and a separate settings window.
 
-Game Lobby is an independent **REA (reverse-engineering) project** informed by the visible workflows of One Game Launcher. It is not the official One Game Launcher app and is not affiliated with or endorsed by its developers.
+Game Lobby is an independent community project with its own name, codebase, and roadmap. It is not the official One Game Launcher app and is not affiliated with or endorsed by its developers.
 
 ## What it offers
 
@@ -44,6 +44,10 @@ Theme JSON example: [`themes/example.json`](themes/example.json). CSS themes sho
 ## Local data and privacy
 
 The SQLite database is managed by `src/main/db/index.ts` and is stored in Electron's per-user application data directory. It uses write-ahead logging and foreign-key checks. JSON backups include game metadata, launch routes, settings, and emulator profiles. The app's built-in local scanners do not require store account credentials.
+
+## License
+
+Game Lobby uses a custom source-available license. It permits private modification and use, while restricting redistribution. Since the repository is public, GitHub users can still view and fork it through GitHub's service under GitHub's terms. See [`LICENSE`](LICENSE) for the full terms. This is not an OSI-approved open-source license.
 
 ## Project status
 
