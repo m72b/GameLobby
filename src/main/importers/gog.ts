@@ -61,7 +61,7 @@ export const gogImporter: Importer = {
         const launchTarget = client ? client : `goggalaxy://openGameView/${encodeURIComponent(productId)}`
         games.push({
           id: `gog:${productId}`, title, store: 'GOG', playtimeMinutes: 0, hidden: false, favorite: false,
-          routes: [{ sourceId: 'gog-galaxy', store: 'GOG', appId: productId, launchTarget, launchArgs: client ? JSON.stringify(['/command=runGame', `/gameId=${releaseKey}`]) : undefined, installPath, owned: true, installed }]
+          routes: [{ sourceId: 'gog-galaxy', store: 'GOG', appId: productId, launchTarget, launchArgs: client ? JSON.stringify(['/command=runGame', `/gameId=${releaseKey}`]) : undefined, installPath, owned: true, installed, installStates: { 'gog-galaxy': installed } }]
         })
       }
       return games

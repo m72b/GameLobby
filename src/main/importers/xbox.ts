@@ -32,7 +32,7 @@ export const xboxImporter: Importer = {
       games.push({
         id: `xbox:${appPackage.PackageFamilyName}:${appId}`, title, store: 'Xbox',
         playtimeMinutes: 0, hidden: false, favorite: false,
-        routes: [{ sourceId: 'xbox-appx', store: 'Xbox', appId: `${appPackage.PackageFamilyName}!${appId}`, launchTarget: `shell:AppsFolder\\${appPackage.PackageFamilyName}!${appId}`, installPath: appPackage.InstallLocation, installed: true }]
+        routes: [{ sourceId: 'xbox-appx', store: 'Xbox', appId: `${appPackage.PackageFamilyName}!${appId}`, launchTarget: `shell:AppsFolder\\${appPackage.PackageFamilyName}!${appId}`, installPath: appPackage.InstallLocation, installed: true, installStates: { 'xbox-appx': true } }]
       })
     }
     return games

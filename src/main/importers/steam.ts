@@ -38,7 +38,7 @@ export const steamImporter: Importer = {
           games.push({
             id: `steam:${appId}`, title, store: 'Steam', cover, defaultCover: cover,
             playtimeMinutes: 0, hidden: false, favorite: false,
-            routes: [{ sourceId: 'steam', store: 'Steam', appId, launchTarget: `steam://run/${appId}`, installPath: installDir ? join(folder, 'common', installDir) : undefined, installed: true }]
+            routes: [{ sourceId: 'steam', store: 'Steam', appId, launchTarget: `steam://run/${appId}`, installPath: installDir ? join(folder, 'common', installDir) : undefined, installed: true, installStates: { 'steam-installed': true } }]
           })
         } catch { /* Ignore malformed manifests and keep scanning. */ }
       }

@@ -24,7 +24,7 @@ export const epicImporter: Importer = {
           games.push({
             id: `epic:${appName}`, title, store: 'Epic Games', cover, defaultCover: cover,
             playtimeMinutes: 0, hidden: false, favorite: false,
-            routes: [{ sourceId: 'epic', store: 'Epic Games', appId: appName, launchTarget: `com.epicgames.launcher://apps/${encodeURIComponent(appName)}?action=launch&silent=true`, installPath: manifest.InstallLocation, owned: true, installed: true }]
+            routes: [{ sourceId: 'epic', store: 'Epic Games', appId: appName, launchTarget: `com.epicgames.launcher://apps/${encodeURIComponent(appName)}?action=launch&silent=true`, installPath: manifest.InstallLocation, installed: true, installStates: { 'epic-installed': true } }]
           })
         } catch { /* Ignore malformed manifests and keep scanning. */ }
       }
@@ -60,7 +60,7 @@ export const epicLegendaryImporter = {
       return [{
         id: `epic:${appName}`, title, store: 'Epic Games' as const,
         playtimeMinutes: 0, hidden: false, favorite: false,
-        routes: [{ sourceId: 'epic', store: 'Epic Games' as const, appId: appName, launchTarget, launchArgs: isInstalled ? JSON.stringify(['launch', appName]) : undefined, installPath, owned: true, installed: isInstalled }]
+        routes: [{ sourceId: 'epic', store: 'Epic Games' as const, appId: appName, launchTarget, launchArgs: isInstalled ? JSON.stringify(['launch', appName]) : undefined, installPath, owned: true, installed: isInstalled, installStates: { 'epic-legendary': isInstalled } }]
       }]
     })
   }

@@ -88,7 +88,7 @@ function scanSource(source: RegistrySource): Game[] {
     const executable = executablePath(entry, folder)
     if (!title || !executable) continue
     const id = `${source.id}:${idFromKey(entry.key)}`
-    found.set(id, { id, title, store: source.store, playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: source.id, store: source.store, appId: idFromKey(entry.key), launchTarget: executable, installPath: folder || dirname(executable), owned: true, installed: true }] })
+    found.set(id, { id, title, store: source.store, playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: source.id, store: source.store, appId: idFromKey(entry.key), launchTarget: executable, installPath: folder || dirname(executable), installed: true, installStates: { [source.id]: true } }] })
   }
   return [...found.values()]
 }
@@ -115,7 +115,7 @@ export const itchImporter: Importer = {
         const executable = executablePath({ key: folder, values: { displayname: item.name } }, folder)
         if (!executable) continue
         const title = item.name.replace(/[-_]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase())
-        games.push({ id: `itch:${item.name.toLowerCase()}`, title, store: 'itch.io', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'itch-installed', store: 'itch.io', appId: item.name, launchTarget: executable, installPath: folder, owned: true, installed: true }] })
+        games.push({ id: `itch:${item.name.toLowerCase()}`, title, store: 'itch.io', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'itch-installed', store: 'itch.io', appId: item.name, launchTarget: executable, installPath: folder, installed: true, installStates: { 'itch-installed': true } }] })
       }
     }
     return games

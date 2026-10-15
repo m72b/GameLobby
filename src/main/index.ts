@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { allGames, database, emulatorProfiles, getLibraryConnectionValues, getSettings, markGamePlayed, putLibraryConnectionValues, putSettings, removeGame, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
+import { allGames, database, emulatorProfiles, getLibraryConnectionValues, getSettings, markGamePlayed, putLibraryConnectionValues, putSettings, reconcileInstalledSource, reconcileOwnedSource, removeGame, resetPlaytime, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
 import { steamImporter, steamOwnedImporter } from './importers/steam'
 import { epicImporter, epicLegendaryImporter } from './importers/epic'
 import { gogImporter } from './importers/gog'
@@ -14,10 +14,53 @@ import { loadRemoteTheme } from './themes/loader'
 import { watchGameProcess } from './process-tracker'
 import { getSteamApiKey, hasSteamApiKey, setSteamApiKey } from './secrets'
 import type { Game, LibraryConnectionInput, LibraryConnections } from '../shared/types'
+import { defaultTheme } from '../shared/defaults'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'lobby-cover', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
 let mainWindow: BrowserWindow | undefined, settingsWindow: BrowserWindow | undefined
+let libraryScanTimer: NodeJS.Timeout | undefined
 const coverRoot = () => join(app.getPath('userData'), 'covers')
+
+const externalHosts = new Set(['playnite.link'])
+function isAppNavigation(rawUrl: string) {
+  try {
+    const url = new URL(rawUrl), dev = process.env.ELECTRON_RENDERER_URL
+    if (dev) {
+      const base = new URL(dev)
+      return url.origin === base.origin && ['/', '/index.html', '/settings.html'].includes(url.pathname)
+    }
+    if (url.protocol !== 'file:') return false
+    const path = resolve(fileURLToPath(url))
+    return [resolve(__dirname, '../renderer/index.html'), resolve(__dirname, '../renderer/settings.html')].includes(path)
+  } catch { return false }
+}
+async function openAllowedExternal(rawUrl: string) {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !externalHosts.has(url.hostname.toLowerCase())) return
+    await shell.openExternal(url.toString())
+  } catch { /* Ignore invalid or non-allowlisted navigation targets. */ }
+}
+function notifyLibraryChanged() {
+  for (const win of [mainWindow, settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('library:changed')
+}
+function notifySettingsChanged(settings: ReturnType<typeof putSettings>) {
+  for (const win of [mainWindow, settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('settings:changed', settings)
+  return settings
+}
+function saveSettings(patch: Parameters<typeof putSettings>[0]) {
+  const settings = putSettings(patch)
+  configureLibraryScanSchedule(settings.scanIntervalHours)
+  return notifySettingsChanged(settings)
+}
+function configureLibraryScanSchedule(hours = getSettings().scanIntervalHours) {
+  if (libraryScanTimer) clearInterval(libraryScanTimer)
+  libraryScanTimer = undefined
+  if (hours > 0) {
+    libraryScanTimer = setInterval(() => { void scanLibraries().catch(error => console.error('Scheduled library scan failed', error)) }, hours * 60 * 60 * 1000)
+    libraryScanTimer.unref()
+  }
+}
 
 function safeSender(event: Electron.IpcMainInvokeEvent) {
   const win = BrowserWindow.fromWebContents(event.sender), frame = event.senderFrame
@@ -33,6 +76,14 @@ function safeSender(event: Electron.IpcMainInvokeEvent) {
 
 function createWindow(settings = false) {
   const win = new BrowserWindow({ width: settings ? 760 : 1440, height: settings ? 820 : 900, minWidth: settings ? 640 : 800, minHeight: 600, show: false, frame: false, backgroundColor: '#101113', title: settings ? 'Game Lobby Settings' : 'Game Lobby', webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
+  win.webContents.setWindowOpenHandler(({ url }) => { void openAllowedExternal(url); return { action: 'deny' } })
+  const guardNavigation = (event: Electron.Event, url: string) => {
+    if (isAppNavigation(url)) return
+    event.preventDefault()
+    void openAllowedExternal(url)
+  }
+  win.webContents.on('will-navigate', guardNavigation)
+  win.webContents.on('will-redirect', guardNavigation)
   win.once('ready-to-show', () => win.show())
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) win.loadURL(`${devUrl}${settings ? '/settings.html' : ''}`)
@@ -64,26 +115,36 @@ function saveLibraryConnections(input: LibraryConnectionInput): LibraryConnectio
 async function scanLibraries() {
   const connections = getLibraryConnectionValues()
   const discovered: Game[] = [], errors: string[] = []
-  const run = async (name: string, scan: () => Promise<Game[]>) => {
-    try { discovered.push(...await scan()) }
+  const installedScans: Array<{ id: string; games: Game[] }> = []
+  const ownedScans: Array<{ id: string; games: Game[] }> = []
+  const run = async (name: string, scan: () => Promise<Game[]>, installedSource?: string, ownedSource?: string) => {
+    try {
+      const games = await scan()
+      discovered.push(...games)
+      if (installedSource) installedScans.push({ id: installedSource, games })
+      if (ownedSource) ownedScans.push({ id: ownedSource, games })
+    }
     catch (error) { const message = error instanceof Error ? error.message : String(error); errors.push(`${name}: ${message}`); console.error(`Could not scan ${name}`, error) }
   }
-  await run('Steam installed', () => steamImporter.scan())
-  await run('Epic Games installed', () => epicImporter.scan())
-  await run('EA app installed', () => eaImporter.scan())
-  await run('Battle.net installed', () => battleNetImporter.scan())
-  await run('Ubisoft Connect installed', () => ubisoftImporter.scan())
-  await run('itch.io installed', () => itchImporter.scan())
-  await run('Amazon Games installed', () => amazonImporter.scan())
-  await run('Xbox / Microsoft Store installed', () => xboxImporter.scan())
+  await run('Steam installed', () => steamImporter.scan(), 'steam-installed')
+  await run('Epic Games installed', () => epicImporter.scan(), 'epic-installed')
+  await run('EA app installed', () => eaImporter.scan(), 'ea-registry')
+  await run('Battle.net installed', () => battleNetImporter.scan(), 'battlenet-registry')
+  await run('Ubisoft Connect installed', () => ubisoftImporter.scan(), 'ubisoft-registry')
+  await run('itch.io installed', () => itchImporter.scan(), 'itch-installed')
+  await run('Amazon Games installed', () => amazonImporter.scan(), 'amazon-registry')
+  await run('Xbox / Microsoft Store installed', () => xboxImporter.scan(), 'xbox-appx')
   if (connections.steamId && hasSteamApiKey()) await run('Steam owned games', async () => {
     const key = getSteamApiKey()
     if (!key) return []
     return steamOwnedImporter.scan(connections.steamId, key)
-  })
-  if (connections.legendaryPath) await run('Epic Games via Legendary', () => epicLegendaryImporter.scan(connections.legendaryPath))
-  await run('GOG Galaxy', () => gogImporter.scan({ connections }))
+  }, undefined, 'steam')
+  if (connections.legendaryPath) await run('Epic Games via Legendary', () => epicLegendaryImporter.scan(connections.legendaryPath), 'epic-legendary', 'epic')
+  await run('GOG Galaxy', () => gogImporter.scan({ connections }), 'gog-galaxy')
   upsertImportedGames(discovered)
+  for (const scan of installedScans) reconcileInstalledSource(scan.id, scan.games)
+  for (const scan of ownedScans) reconcileOwnedSource(scan.id, scan.games)
+  notifyLibraryChanged()
   return { total: allGames().length, imported: discovered.length, errors, scannedAt: Date.now() }
 }
 
@@ -123,7 +184,7 @@ async function launchGame(game: Game, routeIndex = 0) {
     const error = await shell.openPath(target)
     if (error) throw new Error(error)
   }
-  const tracking = route.installed !== false && watchGameProcess(game.id, route.installPath, () => mainWindow?.webContents.send('library:changed'))
+  const tracking = route.installed !== false && watchGameProcess(game.id, route.installPath, notifyLibraryChanged)
   if (!tracking && route.installed !== false) markGamePlayed(game.id, Date.now())
   return true
 }
@@ -143,15 +204,16 @@ function registerIpc() {
   handle('library:launch', async (_event, id: string, route = 0) => { const game = allGames().find(entry => entry.id === id); if (!game) throw new Error('Game not found.'); return launchGame(game, route) })
   handle('library:save', (_event, game: Partial<Game> & { id: string }) => saveGame(game))
   handle('library:remove', (_event, id: string) => removeGame(id))
+  handle('library:resetPlaytime', () => { const games = resetPlaytime(); notifyLibraryChanged(); return games })
   handle('library:add', (_event, title: string, target: string) => saveGame({ id: `custom:${randomUUID()}`, title, store: 'Custom', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'custom', store: 'Custom', launchTarget: target, installed: true }] }))
   handle('library:cover', (_event, id: string, dataUrl: string | null) => { const game = allGames().find(entry => entry.id === id); if (!game) throw new Error('Game not found.'); return saveGame({ ...game, cover: dataUrl ? dataUrlCover(id, dataUrl) : game.defaultCover }) })
   handle('library:chooseCover', async (_event, id: string) => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif'] }] }); if (result.canceled || !result.filePaths[0]) return allGames(); const game = allGames().find(entry => entry.id === id); if (game) { const source = result.filePaths[0], ext = extname(source) || '.jpg', name = safeCoverName(id, ext); mkdirSync(coverRoot(), { recursive: true }); require('node:fs').copyFileSync(source, join(coverRoot(), name)); saveGame({ ...game, cover: `lobby-cover://${encodeURIComponent(name)}` }) } return allGames() })
   handle('library:folder', async (_event, id: string) => { const game = allGames().find(entry => entry.id === id), folder = game?.routes.find(route => route.installPath)?.installPath; if (folder && existsSync(folder)) await shell.openPath(folder) })
   handle('settings:get', () => getSettings())
-  handle('settings:save', (_event, settings) => putSettings(settings))
+  handle('settings:save', (_event, settings) => saveSettings(settings))
   handle('settings:open', () => openSettings())
-  handle('theme:load', async (_event, url: string) => { const theme = await loadRemoteTheme(url); return putSettings({ theme, themeUrl: url, themeName: theme.name }) })
-  handle('theme:reset', () => putSettings({ theme: { name: 'Game Lobby Dark', bg: '#101113', surface: '#181a1d', surface2: '#22252a', accent: '#75d18a', text: '#f2f3f4', muted: '#969ba3', radius: '10px', gap: '9px', font: 'Inter, Segoe UI, sans-serif', hover: 'lift' }, themeUrl: undefined, themeName: undefined }))
+  handle('theme:load', async (_event, url: string) => { const theme = await loadRemoteTheme(url); return notifySettingsChanged(putSettings({ theme, themeUrl: url, themeName: theme.name })) })
+  handle('theme:reset', () => notifySettingsChanged(putSettings({ theme: defaultTheme, themeUrl: undefined, themeName: undefined })))
   handle('emulators:list', () => emulatorProfiles())
   handle('emulators:save', (_event, profile) => saveEmulator(profile))
   handle('emulators:scan', () => ({ total: 0, scannedAt: Date.now() }))
@@ -164,6 +226,7 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   database()
+  configureLibraryScanSchedule()
   protocol.handle('lobby-cover', request => {
     const url = new URL(request.url), name = decodeURIComponent(url.hostname + url.pathname).replace(/^\//, ''), file = resolve(coverRoot(), basename(name))
     if (!file.startsWith(resolve(coverRoot()))) return new Response('Not found', { status: 404 })

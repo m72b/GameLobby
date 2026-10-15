@@ -13,7 +13,7 @@ export function database() {
     db = new Database(file)
     db.pragma('journal_mode = WAL')
     db.pragma('foreign_keys = ON')
-    db.exec(`CREATE TABLE IF NOT EXISTS games(id TEXT PRIMARY KEY,title TEXT NOT NULL COLLATE NOCASE UNIQUE,cover TEXT,defaultCover TEXT,store TEXT NOT NULL,genre TEXT,playtimeMinutes INTEGER NOT NULL DEFAULT 0,playtimeSeconds INTEGER NOT NULL DEFAULT 0,lastPlayed INTEGER,hidden INTEGER NOT NULL DEFAULT 0,favorite INTEGER NOT NULL DEFAULT 0,routes TEXT NOT NULL DEFAULT '[]');
+    db.exec(`CREATE TABLE IF NOT EXISTS games(id TEXT PRIMARY KEY,title TEXT NOT NULL COLLATE NOCASE,cover TEXT,defaultCover TEXT,store TEXT NOT NULL,genre TEXT,playtimeMinutes INTEGER NOT NULL DEFAULT 0,playtimeSeconds INTEGER NOT NULL DEFAULT 0,lastPlayed INTEGER,hidden INTEGER NOT NULL DEFAULT 0,favorite INTEGER NOT NULL DEFAULT 0,routes TEXT NOT NULL DEFAULT '[]');
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS emulators(id TEXT PRIMARY KEY,name TEXT NOT NULL,executable TEXT NOT NULL,args TEXT NOT NULL,romFolders TEXT NOT NULL,extensions TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS plugins(id TEXT PRIMARY KEY,manifest TEXT NOT NULL);
@@ -23,6 +23,15 @@ export function database() {
     if (!gameColumns.has('playtimeSeconds')) {
       db.exec('ALTER TABLE games ADD COLUMN playtimeSeconds INTEGER NOT NULL DEFAULT 0')
       db.exec('UPDATE games SET playtimeSeconds=playtimeMinutes*60')
+    }
+    const gameSchema = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='games'").get() as { sql: string } | undefined)?.sql || ''
+    if (/title\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\s+UNIQUE/i.test(gameSchema)) {
+      db.transaction(() => {
+        db.exec('ALTER TABLE games RENAME TO games_unique_title_old')
+        db.exec("CREATE TABLE games(id TEXT PRIMARY KEY,title TEXT NOT NULL COLLATE NOCASE,cover TEXT,defaultCover TEXT,store TEXT NOT NULL,genre TEXT,playtimeMinutes INTEGER NOT NULL DEFAULT 0,playtimeSeconds INTEGER NOT NULL DEFAULT 0,lastPlayed INTEGER,hidden INTEGER NOT NULL DEFAULT 0,favorite INTEGER NOT NULL DEFAULT 0,routes TEXT NOT NULL DEFAULT '[]')")
+        db.exec('INSERT INTO games(id,title,cover,defaultCover,store,genre,playtimeMinutes,playtimeSeconds,lastPlayed,hidden,favorite,routes) SELECT id,title,cover,defaultCover,store,genre,playtimeMinutes,playtimeSeconds,lastPlayed,hidden,favorite,routes FROM games_unique_title_old')
+        db.exec('DROP TABLE games_unique_title_old')
+      })()
     }
     db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run('app', JSON.stringify(defaultSettings))
   }
@@ -78,9 +87,6 @@ function persistGame(game: Partial<Game> & { id: string }) {
 
 export function saveGame(game: Partial<Game> & { id: string }) { persistGame(game); return allGames() }
 
-function normalizedTitle(title: string) {
-  return title.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-}
 function routeIdentity(route: GameRoute) {
   return `${route.sourceId.toLocaleLowerCase()}:${(route.appId || route.launchTarget).toLocaleLowerCase()}`
 }
@@ -91,8 +97,9 @@ function mergeRoute(existing: GameRoute, incoming: GameRoute): GameRoute {
   combined.installPath = incoming.installPath ?? existing.installPath
   if (existing.owned || incoming.owned) combined.owned = true
   else if (existing.owned !== undefined || incoming.owned !== undefined) combined.owned = false
-  if (existing.installed === true || incoming.installed === true) combined.installed = true
-  else if (existing.installed === false || incoming.installed === false) combined.installed = false
+  combined.installStates = { ...(existing.installStates || {}), ...(incoming.installStates || {}) }
+  if (Object.keys(combined.installStates).length) combined.installed = Object.values(combined.installStates).some(Boolean)
+  else if (incoming.installed !== undefined) combined.installed = incoming.installed
   const times = [existing.playtimeMinutes, incoming.playtimeMinutes].filter((value): value is number => value !== undefined)
   if (times.length) combined.playtimeMinutes = Math.max(...times)
   combined.lastPlayed = Math.max(existing.lastPlayed || 0, incoming.lastPlayed || 0) || undefined
@@ -102,15 +109,21 @@ function mergeRoute(existing: GameRoute, incoming: GameRoute): GameRoute {
 export function upsertImportedGames(games: Game[]) {
   const rows = database().prepare('SELECT * FROM games').all() as any[]
   const byId = new Map(rows.map(row => [row.id, row]))
-  const byTitle = new Map(rows.map(row => [normalizedTitle(row.title), row]))
+  const byRoute = new Map<string, any>()
+  for (const row of rows) {
+    for (const route of JSON.parse(row.routes || '[]') as GameRoute[]) {
+      const identity = routeIdentity(route)
+      if (!byRoute.has(identity)) byRoute.set(identity, row)
+    }
+  }
   const write = database().transaction((incomingGames: Game[]) => {
     for (const game of incomingGames) {
-      const existing = byId.get(game.id) || byTitle.get(normalizedTitle(game.title))
+      const existing = byId.get(game.id) || game.routes.map(route => byRoute.get(routeIdentity(route))).find(Boolean)
       if (!existing) {
         const inserted = persistGame(game)
         const row = { ...inserted, routes: JSON.stringify(game.routes), playtimeSeconds: game.playtimeSeconds ?? game.playtimeMinutes * 60, playtimeMinutes: game.playtimeMinutes }
         byId.set(game.id, row)
-        byTitle.set(normalizedTitle(game.title), row)
+        for (const route of game.routes) byRoute.set(routeIdentity(route), row)
         continue
       }
       const routes: GameRoute[] = JSON.parse(existing.routes || '[]')
@@ -129,12 +142,68 @@ export function upsertImportedGames(games: Game[]) {
       })
       const row = { ...existing, ...updated, routes: JSON.stringify(routes), playtimeSeconds, playtimeMinutes: Math.floor(playtimeSeconds / 60), lastPlayed }
       byId.set(existing.id, row)
-      byTitle.set(normalizedTitle(existing.title), row)
+      for (const route of routes) byRoute.set(routeIdentity(route), row)
     }
   })
   write(games)
 }
 export function upsertImported(game: Game) { upsertImportedGames([game]) }
+
+const legacyInstallSources: Record<string, string[]> = {
+  'steam-installed': ['steam'], 'epic-installed': ['epic'], 'ea-registry': ['ea-registry'],
+  'battlenet-registry': ['battlenet-registry'], 'ubisoft-registry': ['ubisoft-registry'],
+  'amazon-registry': ['amazon-registry'], 'itch-installed': ['itch-installed'],
+  'xbox-appx': ['xbox-appx'], 'gog-galaxy': ['gog-galaxy']
+}
+
+export function reconcileInstalledSource(sourceId: string, scannedGames: Game[]) {
+  const active = new Set(scannedGames.flatMap(game => game.routes.filter(route => route.installed === true).map(routeIdentity)))
+  const rows = database().prepare('SELECT * FROM games').all() as any[]
+  database().transaction(() => {
+    for (const row of rows) {
+      const routes = JSON.parse(row.routes || '[]') as GameRoute[]
+      let changed = false
+      const updatedRoutes = routes.flatMap(route => {
+        const hasSourceState = Object.prototype.hasOwnProperty.call(route.installStates || {}, sourceId)
+        const inferred = !hasSourceState && legacyInstallSources[sourceId]?.includes(route.sourceId)
+        const epicInstalledLegacy = sourceId === 'epic-installed' && route.sourceId === 'epic' && !route.launchArgs && route.launchTarget.includes('action=launch')
+        const epicLegendaryLegacy = !hasSourceState && sourceId === 'epic-legendary' && route.sourceId === 'epic' && !!route.launchArgs
+        if (!hasSourceState && !inferred && !epicInstalledLegacy && !epicLegendaryLegacy) return [route]
+        const isActive = active.has(routeIdentity(route))
+        const installStates = { ...(route.installStates || {}), [sourceId]: isActive }
+        const next = { ...route, installStates, installed: Object.values(installStates).some(Boolean) }
+        if (!next.installed) delete next.installPath
+        if ((epicInstalledLegacy || ['ea-registry', 'battlenet-registry', 'ubisoft-registry', 'amazon-registry', 'itch-installed', 'xbox-appx'].includes(sourceId)) && !next.launchArgs) delete next.owned
+        changed = true
+        if (!next.installed && !next.owned) return []
+        return [next]
+      })
+      if (!changed) continue
+      if (!updatedRoutes.length) database().prepare('DELETE FROM games WHERE id=?').run(row.id)
+      else persistGame({ id: row.id, routes: updatedRoutes })
+    }
+  })()
+}
+
+export function reconcileOwnedSource(routeSourceId: string, scannedGames: Game[]) {
+  const owned = new Set(scannedGames.flatMap(game => game.routes.filter(route => route.owned === true).map(routeIdentity)))
+  const rows = database().prepare('SELECT * FROM games').all() as any[]
+  database().transaction(() => {
+    for (const row of rows) {
+      const routes = JSON.parse(row.routes || '[]') as GameRoute[]
+      let changed = false
+      const updatedRoutes = routes.flatMap(route => {
+        if (route.sourceId !== routeSourceId || route.owned !== true || owned.has(routeIdentity(route))) return [route]
+        changed = true
+        if (route.installed) return [{ ...route, owned: false }]
+        return []
+      })
+      if (!changed) continue
+      if (!updatedRoutes.length) database().prepare('DELETE FROM games WHERE id=?').run(row.id)
+      else persistGame({ id: row.id, routes: updatedRoutes })
+    }
+  })()
+}
 
 export function addTrackedPlaytime(id: string, seconds: number, startedAt: number) {
   const amount = Math.max(0, Math.floor(seconds))
@@ -142,6 +211,17 @@ export function addTrackedPlaytime(id: string, seconds: number, startedAt: numbe
   database().prepare(`UPDATE games SET playtimeSeconds=playtimeSeconds+?,playtimeMinutes=CAST((playtimeSeconds+?)/60 AS INTEGER),lastPlayed=MAX(COALESCE(lastPlayed,0),?) WHERE id=?`).run(amount, amount, startedAt, id)
 }
 export function markGamePlayed(id: string, playedAt: number) { database().prepare('UPDATE games SET lastPlayed=? WHERE id=?').run(playedAt, id) }
+export function resetPlaytime() {
+  const games = allGames()
+  const update = database().transaction(() => {
+    for (const game of games) {
+      const routes = game.routes.map(route => ({ ...route, playtimeMinutes: 0, lastPlayed: undefined }))
+      database().prepare('UPDATE games SET playtimeSeconds=0,playtimeMinutes=0,lastPlayed=NULL,routes=? WHERE id=?').run(JSON.stringify(routes), game.id)
+    }
+  })
+  update()
+  return allGames()
+}
 
 export function removeGame(id: string) { database().prepare('DELETE FROM games WHERE id=?').run(id); return allGames() }
 export function getSettings(): Settings { const row = database().prepare('SELECT value FROM settings WHERE key=?').get('app') as { value: string } | undefined; return { ...defaultSettings, ...(row ? JSON.parse(row.value) : {}) } }
