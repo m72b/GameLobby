@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { allGames, database, emulatorProfiles, getLibraryConnectionValues, getSettings, markGamePlayed, putLibraryConnectionValues, putSettings, reconcileInstalledSource, reconcileOwnedSource, removeGame, resetPlaytime, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
+import { allGames, database, emulatorProfiles, getLibraryConnectionValues, getSettings, markGamePlayed, mergeGames, putLibraryConnectionValues, putSettings, reconcileInstalledSource, reconcileOwnedSource, removeGame, resetPlaytime, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
 import { steamImporter, steamOwnedImporter } from './importers/steam'
 import { epicImporter, epicLegendaryImporter } from './importers/epic'
 import { gogImporter } from './importers/gog'
@@ -19,6 +19,7 @@ import { defaultTheme } from '../shared/defaults'
 protocol.registerSchemesAsPrivileged([{ scheme: 'lobby-cover', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
 let mainWindow: BrowserWindow | undefined, settingsWindow: BrowserWindow | undefined
 let libraryScanTimer: NodeJS.Timeout | undefined
+let activeLibraryScan: Promise<{ total: number; imported: number; errors: string[]; scannedAt: number }> | undefined
 const coverRoot = () => join(app.getPath('userData'), 'covers')
 
 const externalHosts = new Set(['playnite.link'])
@@ -112,7 +113,7 @@ function saveLibraryConnections(input: LibraryConnectionInput): LibraryConnectio
   return { ...values, steamApiKeySet: hasSteamApiKey() }
 }
 
-async function scanLibraries() {
+async function performLibraryScan() {
   const connections = getLibraryConnectionValues()
   const discovered: Game[] = [], errors: string[] = []
   const installedScans: Array<{ id: string; games: Game[] }> = []
@@ -146,6 +147,14 @@ async function scanLibraries() {
   for (const scan of ownedScans) reconcileOwnedSource(scan.id, scan.games)
   notifyLibraryChanged()
   return { total: allGames().length, imported: discovered.length, errors, scannedAt: Date.now() }
+}
+
+async function scanLibraries() {
+  if (activeLibraryScan) return activeLibraryScan
+  const scan = performLibraryScan()
+  activeLibraryScan = scan
+  try { return await scan }
+  finally { if (activeLibraryScan === scan) activeLibraryScan = undefined }
 }
 
 function parseLaunchArguments(value?: string): string[] {
@@ -203,6 +212,7 @@ function registerIpc() {
   handle('library:chooseGogDatabase', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'SQLite database', extensions: ['db', 'sqlite', 'sqlite3'] }] }); return result.canceled ? null : result.filePaths[0] || null })
   handle('library:launch', async (_event, id: string, route = 0) => { const game = allGames().find(entry => entry.id === id); if (!game) throw new Error('Game not found.'); return launchGame(game, route) })
   handle('library:save', (_event, game: Partial<Game> & { id: string }) => saveGame(game))
+  handle('library:merge', (_event, targetId: string, sourceId: string) => mergeGames(targetId, sourceId))
   handle('library:remove', (_event, id: string) => removeGame(id))
   handle('library:resetPlaytime', () => { const games = resetPlaytime(); notifyLibraryChanged(); return games })
   handle('library:add', (_event, title: string, target: string) => saveGame({ id: `custom:${randomUUID()}`, title, store: 'Custom', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'custom', store: 'Custom', launchTarget: target, installed: true }] }))

@@ -25,7 +25,12 @@ function queryRegistry(key: string): RegistryEntry[] {
     }
     if (current) entries.push(current)
     return entries
-  } catch { return [] }
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string }
+    const stderr = failure.stderr?.toString() || failure.message || ''
+    if (failure.status === 1 && /unable to find the specified registry key|cannot find the specified registry key/i.test(stderr)) return []
+    throw new Error(`Could not read registry key ${key}: ${stderr || 'unknown registry error'}`)
+  }
 }
 
 function expandPath(value?: string) {
@@ -86,7 +91,7 @@ function scanSource(source: RegistrySource): Game[] {
     const title = text(entry, 'displayname', 'display name') || idFromKey(entry.key)
     const folder = installPath(entry)
     const executable = executablePath(entry, folder)
-    if (!title || !executable) continue
+    if (!title || !executable) throw new Error(`${source.name}: could not verify the installed executable for "${title}". Existing entries were left unchanged.`)
     const id = `${source.id}:${idFromKey(entry.key)}`
     found.set(id, { id, title, store: source.store, playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: source.id, store: source.store, appId: idFromKey(entry.key), launchTarget: executable, installPath: folder || dirname(executable), installed: true, installStates: { [source.id]: true } }] })
   }
@@ -113,7 +118,7 @@ export const itchImporter: Importer = {
         if (!item.isDirectory()) continue
         const folder = join(root, item.name)
         const executable = executablePath({ key: folder, values: { displayname: item.name } }, folder)
-        if (!executable) continue
+        if (!executable) throw new Error(`Could not verify the installed itch.io game in ${folder}. Existing entries were left unchanged.`)
         const title = item.name.replace(/[-_]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase())
         games.push({ id: `itch:${item.name.toLowerCase()}`, title, store: 'itch.io', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'itch-installed', store: 'itch.io', appId: item.name, launchTarget: executable, installPath: folder, installed: true, installStates: { 'itch-installed': true } }] })
       }

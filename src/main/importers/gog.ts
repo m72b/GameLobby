@@ -55,7 +55,7 @@ export const gogImporter: Importer = {
       for (const releaseKey of releases) {
         const productId = releaseKey.slice('gog_'.length)
         const title = titleFromValue((getTitle.get(releaseKey) as { value?: unknown } | undefined)?.value)
-        if (!productId || !title) continue
+        if (!productId || !title) throw new Error(`GOG release ${releaseKey} has no readable title.`)
         const installed = installedPaths.has(productId)
         const installPath = installedPaths.get(productId) || undefined
         const launchTarget = client ? client : `goggalaxy://openGameView/${encodeURIComponent(productId)}`

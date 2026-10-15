@@ -19,14 +19,17 @@ export const epicImporter: Importer = {
           const manifest = JSON.parse(readFileSync(join(root, file), 'utf8'))
           const appName = String(manifest.AppName || manifest.CatalogItemId || manifest.InstallationGuid || file)
           const title = String(manifest.DisplayName || manifest.AppName || '').trim()
-          if (!title) continue
+          if (!title) throw new Error('manifest has no display title')
           const cover = manifest.LargePreviewImage || manifest.KeyImages?.[0]?.URL
           games.push({
             id: `epic:${appName}`, title, store: 'Epic Games', cover, defaultCover: cover,
             playtimeMinutes: 0, hidden: false, favorite: false,
             routes: [{ sourceId: 'epic', store: 'Epic Games', appId: appName, launchTarget: `com.epicgames.launcher://apps/${encodeURIComponent(appName)}?action=launch&silent=true`, installPath: manifest.InstallLocation, installed: true, installStates: { 'epic-installed': true } }]
           })
-        } catch { /* Ignore malformed manifests and keep scanning. */ }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          throw new Error(`Could not verify Epic manifest ${file}: ${reason}`)
+        }
       }
     }
     return games

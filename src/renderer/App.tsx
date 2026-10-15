@@ -8,17 +8,28 @@ import { applyTheme } from './theme'
 
 type View = 'All Games' | 'Favorites' | 'Recently Played' | 'Hidden'
 type SortBy = 'title' | 'lastPlayed' | 'playtime'
-type MenuAction = 'Play' | 'Edit metadata' | 'Set custom cover' | 'Hide' | 'Unhide' | 'Add to collection' | 'Open install folder' | 'Remove'
+type MenuAction = 'Play' | 'Edit metadata' | 'Set custom cover' | 'Hide' | 'Unhide' | 'Add to collection' | 'Link another game' | 'Open install folder' | 'Remove'
 
 const stores: StoreName[] = ['Steam', 'Epic Games', 'GOG', 'EA app', 'Battle.net', 'Xbox', 'Ubisoft', 'Emulator', 'itch.io', 'Amazon Games', 'Custom']
 const colors = ['#224d67', '#563339', '#32513d', '#544433', '#34394e', '#6c3c2b']
 const storeIcon: Record<string, string> = { Steam: 'S', 'Epic Games': 'E', GOG: 'G', 'EA app': 'EA', 'Battle.net': 'B', Xbox: 'X', Ubisoft: 'U', Emulator: '⌘', 'itch.io': 'i', 'Amazon Games': 'a', Custom: '+' }
 
+function coverImage(value?: string) {
+  if (!value) return undefined
+  try {
+    const url = new URL(value, window.location.href)
+    if (url.protocol !== 'https:' && url.protocol !== 'lobby-cover:') return undefined
+    const escaped = url.href.replace(/[\\"\r\n\f]/g, character => `\\${character}`)
+    return `url("${escaped}")`
+  } catch { return undefined }
+}
+
 function coverStyle(game: Game, index: number): CSSProperties {
   const color = colors[index % colors.length]
+  const image = coverImage(game.cover)
   return {
     background: 'linear-gradient(155deg, ' + color + ', #161719)',
-    backgroundImage: game.cover ? 'linear-gradient(0deg,rgba(0,0,0,.22),transparent 50%),url("' + game.cover + '")' : undefined
+    backgroundImage: image ? `linear-gradient(0deg,rgba(0,0,0,.22),transparent 50%),${image}` : undefined
   }
 }
 
@@ -30,6 +41,8 @@ export default function App() {
   const [view, setView] = useState<View>('All Games')
   const [sortBy, setSortBy] = useState<SortBy>('title')
   const [selected, setSelected] = useState<Game | null>(null)
+  const [linkingGame, setLinkingGame] = useState<Game | null>(null)
+  const [linkQuery, setLinkQuery] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; game: Game } | null>(null)
   const [scanBusy, setScanBusy] = useState(false)
   const [toast, setToast] = useState('')
@@ -97,11 +110,29 @@ export default function App() {
     await refresh()
     setSelected((await window.lobby.library.list()).find(item => item.id === game.id) || null)
   }
+  const linkAnotherGame = (game: Game) => {
+    setLinkingGame(game)
+    setLinkQuery('')
+    setMenu(null)
+  }
+  const mergeIntoKeptGame = async (source: Game) => {
+    if (!linkingGame) return
+    try {
+      const nextGames = await window.lobby.library.merge(linkingGame.id, source.id)
+      setGames(nextGames)
+      setSelected(nextGames.find(game => game.id === linkingGame.id) || null)
+      setLinkingGame(null)
+      notice(`Linked ${source.title} to ${linkingGame.title}`)
+    } catch (error) {
+      notice(error instanceof Error ? error.message : 'Could not link these games')
+    }
+  }
   const menuAction = async (action: MenuAction, game: Game) => {
     setMenu(null)
     if (action === 'Play') return launch(game)
     if (action === 'Edit metadata') return beginEdit(game)
     if (action === 'Set custom cover') return setCover(game)
+    if (action === 'Link another game') return linkAnotherGame(game)
     if (action === 'Hide' || action === 'Unhide') {
       const nextGames = await window.lobby.library.save({ ...game, hidden: action === 'Hide' })
       setGames(nextGames)
@@ -230,6 +261,7 @@ export default function App() {
     { action: 'Play', label: 'Play' },
     { action: 'Edit metadata', label: 'Edit metadata' },
     { action: 'Set custom cover', label: 'Set custom cover' },
+    { action: 'Link another game', label: 'Link another game' },
     { action: menu?.game.hidden ? 'Unhide' : 'Hide', label: menu?.game.hidden ? 'Unhide' : 'Hide' },
     { action: 'Add to collection', label: 'Add to collection · Coming soon', disabled: true },
     { action: 'Open install folder', label: 'Open install folder' },
@@ -315,6 +347,7 @@ export default function App() {
       <div className="detail-tags"><span>{selected.genre || 'Game'}</span><span>·</span><span>{Math.floor(selected.playtimeMinutes / 60)}h played</span></div>
       <button className="primary-button wide" onClick={() => void launch(selected)}><Play size={15} fill="currentColor" /> Play</button>
       <button className="secondary-button wide" onClick={() => beginEdit(selected)}>Edit metadata</button>
+      <button className="secondary-button wide" onClick={() => linkAnotherGame(selected)}>Link another game</button>
       <div className="detail-section"><div className="detail-label">PLAY FROM</div>{selected.routes.map((route, index) =>
         <button className="route-row" key={route.sourceId + '-' + index} onClick={() => void launch(selected, index)}>
           <span className="store-badge small">{storeIcon[route.store] || '•'}</span>
@@ -342,6 +375,18 @@ export default function App() {
       <label className="toggle-row"><span>Favorite</span><input type="checkbox" checked={editFavorite} onChange={event => setEditFavorite(event.target.checked)} /></label>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditingGame(null)}>Cancel</button><button className="primary-button">Save changes</button></div>
     </form></div>}
+    {linkingGame && <div className="modal-scrim"><div className="modal link-modal">
+      <div className="modal-head"><h2>Link another game</h2><button type="button" aria-label="Close" onClick={() => setLinkingGame(null)}><X size={17} /></button></div>
+      <p>Choose a duplicate to combine into <b>{linkingGame.title}</b>. Its title and metadata stay as the primary entry; launch sources and playtime are combined.</p>
+      <label>Find a game<input value={linkQuery} onChange={event => setLinkQuery(event.target.value)} placeholder="Search your library" autoFocus /></label>
+      <div className="link-game-list">
+        {games.filter(game => game.id !== linkingGame.id && (!linkQuery.trim() || game.title.toLocaleLowerCase().includes(linkQuery.trim().toLocaleLowerCase()))).slice(0, 100).map(game =>
+          <button className="link-game-row" key={game.id} onClick={() => void mergeIntoKeptGame(game)}><span><b>{game.title}</b><small>{game.store} · {game.routes.length} launch source{game.routes.length === 1 ? '' : 's'}</small></span><span>Merge</span></button>
+        )}
+        {games.filter(game => game.id !== linkingGame.id && (!linkQuery.trim() || game.title.toLocaleLowerCase().includes(linkQuery.trim().toLocaleLowerCase()))).length === 0 && <div className="empty-inline">No other matching games.</div>}
+      </div>
+      <div className="modal-actions"><button className="secondary-button" onClick={() => setLinkingGame(null)}>Cancel</button></div>
+    </div></div>}
     {editMode && <div className="edit-banner">Edit mode is on · select a title to edit its metadata <button onClick={() => setEditMode(false)}>Done</button></div>}
     {toast && <div className="toast">{toast}</div>}
   </div>

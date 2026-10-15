@@ -10,13 +10,22 @@ function steamRoots(): string[] {
     const output = require('node:child_process').execFileSync('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { encoding: 'utf8' })
     const match = output.match(/SteamPath\s+REG_SZ\s+(.+)/i)
     if (match) roots.add(match[1].trim().replaceAll('\\', '/'))
-  } catch { /* Steam is optional. */ }
-  for (const root of [...roots]) {
-    try {
-      const text = readFileSync(join(root, 'steamapps', 'libraryfolders.vdf'), 'utf8')
-      for (const match of text.matchAll(/"path"\s+"([^"]+)"/g)) roots.add(match[1].replaceAll('\\', '/'))
-    } catch { /* Older libraryfolders.vdf files may not exist. */ }
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string }
+    const stderr = failure.stderr?.toString() || failure.message || ''
+    if (!(failure.status === 1 && /unable to find the specified registry key|cannot find the specified registry key/i.test(stderr))) {
+      throw new Error(`Could not locate Steam libraries: ${stderr || 'registry lookup failed'}`)
+    }
   }
+  let foundLibraryList = false
+  for (const root of [...roots]) {
+    const libraryFile = join(root, 'steamapps', 'libraryfolders.vdf')
+    if (!existsSync(libraryFile)) continue
+    const text = readFileSync(libraryFile, 'utf8')
+    foundLibraryList = true
+    for (const match of text.matchAll(/"(?:path|\d+)"\s+"([A-Za-z]:[\\/][^"]+)"/g)) roots.add(match[1].replaceAll('\\', '/'))
+  }
+  if (roots.size && !foundLibraryList) throw new Error('Steam libraryfolders.vdf could not be found. Existing Steam entries were left unchanged.')
   return [...roots]
 }
 
@@ -26,21 +35,24 @@ export const steamImporter: Importer = {
     const games: Game[] = []
     for (const root of steamRoots()) {
       const folder = join(root, 'steamapps')
-      if (!existsSync(folder)) continue
+      if (!existsSync(folder)) throw new Error(`Steam library folder is unavailable: ${folder}. Existing entries were left unchanged.`)
       for (const file of readdirSync(folder).filter(name => /^appmanifest_\d+\.acf$/i.test(name))) {
         try {
           const text = readFileSync(join(folder, file), 'utf8')
           const appId = text.match(/"appid"\s+"(\d+)"/)?.[1]
           const title = text.match(/"name"\s+"([^"]+)"/)?.[1]
           const installDir = text.match(/"installdir"\s+"([^"]+)"/)?.[1]
-          if (!appId || !title) continue
+          if (!appId || !title) throw new Error('manifest is missing its app ID or title')
           const cover = `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/library_600x900.jpg`
           games.push({
             id: `steam:${appId}`, title, store: 'Steam', cover, defaultCover: cover,
             playtimeMinutes: 0, hidden: false, favorite: false,
             routes: [{ sourceId: 'steam', store: 'Steam', appId, launchTarget: `steam://run/${appId}`, installPath: installDir ? join(folder, 'common', installDir) : undefined, installed: true, installStates: { 'steam-installed': true } }]
           })
-        } catch { /* Ignore malformed manifests and keep scanning. */ }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          throw new Error(`Could not verify Steam manifest ${file}: ${reason}`)
+        }
       }
     }
     return games

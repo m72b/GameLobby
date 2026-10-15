@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import Database from 'better-sqlite3'
-import { mkdirSync } from 'node:fs'
+import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { EmulatorProfile, Game, GameRoute, LibraryConnectionInput, LibraryConnections, Settings } from '../../shared/types'
 import { defaultSettings } from '../../shared/defaults'
@@ -26,6 +26,10 @@ export function database() {
     }
     const gameSchema = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='games'").get() as { sql: string } | undefined)?.sql || ''
     if (/title\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\s+UNIQUE/i.test(gameSchema)) {
+      const checkpoint = db.pragma('wal_checkpoint(FULL)') as Array<{ busy: number }>
+      if (checkpoint[0]?.busy) throw new Error('Could not safely checkpoint the library before its database migration.')
+      const backup = join(dirname(file), `library.sqlite.pre-title-migration-${Date.now()}.bak`)
+      copyFileSync(file, backup)
       db.transaction(() => {
         db.exec('ALTER TABLE games RENAME TO games_unique_title_old')
         db.exec("CREATE TABLE games(id TEXT PRIMARY KEY,title TEXT NOT NULL COLLATE NOCASE,cover TEXT,defaultCover TEXT,store TEXT NOT NULL,genre TEXT,playtimeMinutes INTEGER NOT NULL DEFAULT 0,playtimeSeconds INTEGER NOT NULL DEFAULT 0,lastPlayed INTEGER,hidden INTEGER NOT NULL DEFAULT 0,favorite INTEGER NOT NULL DEFAULT 0,routes TEXT NOT NULL DEFAULT '[]')")
@@ -157,6 +161,9 @@ const legacyInstallSources: Record<string, string[]> = {
 }
 
 export function reconcileInstalledSource(sourceId: string, scannedGames: Game[]) {
+  // An empty result is ambiguous: clients may be missing, a drive may be offline,
+  // or the library database may not be readable. Never infer uninstalls from it.
+  if (scannedGames.length === 0) return
   const active = new Set(scannedGames.flatMap(game => game.routes.filter(route => route.installed === true).map(routeIdentity)))
   const rows = database().prepare('SELECT * FROM games').all() as any[]
   database().transaction(() => {
@@ -175,7 +182,7 @@ export function reconcileInstalledSource(sourceId: string, scannedGames: Game[])
         if (!next.installed) delete next.installPath
         if ((epicInstalledLegacy || ['ea-registry', 'battlenet-registry', 'ubisoft-registry', 'amazon-registry', 'itch-installed', 'xbox-appx'].includes(sourceId)) && !next.launchArgs) delete next.owned
         changed = true
-        if (!next.installed && !next.owned) return []
+        if (!next.installed && !next.owned && !hasUserData(row)) return []
         return [next]
       })
       if (!changed) continue
@@ -186,6 +193,7 @@ export function reconcileInstalledSource(sourceId: string, scannedGames: Game[])
 }
 
 export function reconcileOwnedSource(routeSourceId: string, scannedGames: Game[]) {
+  if (scannedGames.length === 0) return
   const owned = new Set(scannedGames.flatMap(game => game.routes.filter(route => route.owned === true).map(routeIdentity)))
   const rows = database().prepare('SELECT * FROM games').all() as any[]
   database().transaction(() => {
@@ -195,7 +203,7 @@ export function reconcileOwnedSource(routeSourceId: string, scannedGames: Game[]
       const updatedRoutes = routes.flatMap(route => {
         if (route.sourceId !== routeSourceId || route.owned !== true || owned.has(routeIdentity(route))) return [route]
         changed = true
-        if (route.installed) return [{ ...route, owned: false }]
+        if (route.installed || hasUserData(row)) return [{ ...route, owned: false, installed: !!route.installed }]
         return []
       })
       if (!changed) continue
@@ -224,6 +232,46 @@ export function resetPlaytime() {
 }
 
 export function removeGame(id: string) { database().prepare('DELETE FROM games WHERE id=?').run(id); return allGames() }
+function hasUserData(row: any) {
+  const seconds = Number(row.playtimeSeconds ?? Number(row.playtimeMinutes || 0) * 60)
+  const routes = JSON.parse(row.routes || '[]') as GameRoute[]
+  const routeHasStats = routes.some(route => (route.playtimeMinutes || 0) > 0 || route.lastPlayed != null)
+  return !!row.favorite || !!row.hidden || seconds > 0 || row.lastPlayed != null || routeHasStats || !!row.genre || (!!row.cover && row.cover !== row.defaultCover)
+}
+
+export function mergeGames(targetId: string, sourceId: string) {
+  if (targetId === sourceId) throw new Error('Choose two different games to merge.')
+  const games = allGames()
+  const target = games.find(game => game.id === targetId)
+  const source = games.find(game => game.id === sourceId)
+  if (!target || !source) throw new Error('One of the selected games no longer exists.')
+  const routes = [...target.routes]
+  for (const incoming of source.routes) {
+    const index = routes.findIndex(route => routeIdentity(route) === routeIdentity(incoming))
+    if (index < 0) routes.push(incoming)
+    else routes[index] = mergeRoute(routes[index], incoming)
+  }
+  const targetCustomCover = !!target.cover && target.cover !== target.defaultCover
+  const sourceCustomCover = !!source.cover && source.cover !== source.defaultCover
+  const seconds = (target.playtimeSeconds ?? target.playtimeMinutes * 60) + (source.playtimeSeconds ?? source.playtimeMinutes * 60)
+  database().transaction(() => {
+    persistGame({
+      ...target,
+      cover: targetCustomCover ? target.cover : sourceCustomCover ? source.cover : target.cover || source.cover,
+      defaultCover: target.defaultCover || source.defaultCover,
+      genre: target.genre || source.genre,
+      playtimeSeconds: seconds,
+      playtimeMinutes: Math.floor(seconds / 60),
+      lastPlayed: Math.max(target.lastPlayed || 0, source.lastPlayed || 0) || undefined,
+      favorite: target.favorite || source.favorite,
+      hidden: target.hidden || source.hidden,
+      routes
+    })
+    database().prepare('DELETE FROM games WHERE id=?').run(sourceId)
+  })()
+  return allGames()
+}
+
 export function getSettings(): Settings { const row = database().prepare('SELECT value FROM settings WHERE key=?').get('app') as { value: string } | undefined; return { ...defaultSettings, ...(row ? JSON.parse(row.value) : {}) } }
 export function putSettings(patch: Partial<Settings>): Settings { const next = { ...getSettings(), ...patch }; database().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('app', JSON.stringify(next)); return next }
 

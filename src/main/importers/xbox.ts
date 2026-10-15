@@ -24,10 +24,10 @@ export const xboxImporter: Importer = {
     for (const appPackage of packages) {
       if (!appPackage.Name || !appPackage.PackageFamilyName || !appPackage.InstallLocation || excludedName.test(appPackage.Name) || !likelyGameName.test(appPackage.Name)) continue
       const manifestPath = join(appPackage.InstallLocation, 'AppxManifest.xml')
-      if (!existsSync(manifestPath)) continue
+      if (!existsSync(manifestPath)) throw new Error(`Could not verify Xbox package ${appPackage.Name}. Existing entries were left unchanged.`)
       const manifest = readFileSync(manifestPath, 'utf8')
       const appId = manifest.match(/<Application\b[^>]*\bId="([^"]+)"/)?.[1]
-      if (!appId) continue
+      if (!appId) throw new Error(`Xbox package ${appPackage.Name} has no readable application entry.`)
       const title = appPackage.Name.split('.').slice(1).join(' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ').trim() || appPackage.Name
       games.push({
         id: `xbox:${appPackage.PackageFamilyName}:${appId}`, title, store: 'Xbox',
