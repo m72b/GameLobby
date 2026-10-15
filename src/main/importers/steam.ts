@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import type { Game } from '../../shared/types'
 import type { Importer } from './types'
@@ -7,7 +8,7 @@ function steamRoots(): string[] {
   const roots = new Set<string>()
   for (const path of ['C:/Program Files (x86)/Steam', 'C:/Program Files/Steam', 'D:/Steam']) if (existsSync(path)) roots.add(path)
   try {
-    const output = require('node:child_process').execFileSync('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { encoding: 'utf8' })
+    const output = execFileSync('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { encoding: 'utf8' })
     const match = output.match(/SteamPath\s+REG_SZ\s+(.+)/i)
     if (match) roots.add(match[1].trim().replaceAll('\\', '/'))
   } catch (error) {
@@ -29,6 +30,14 @@ function steamRoots(): string[] {
   return [...roots]
 }
 
+export function steamStateFlagsIndicateInstalled(manifest: string) {
+  const rawFlags = manifest.match(/"StateFlags"\s+"(\d+)"/i)?.[1]
+  if (!rawFlags) throw new Error('manifest is missing its install state flags')
+  const stateFlags = Number(rawFlags)
+  if (!Number.isSafeInteger(stateFlags)) throw new Error('manifest has invalid install state flags')
+  return (stateFlags & 4) !== 0
+}
+
 export const steamImporter: Importer = {
   id: 'steam-installed', name: 'Steam (installed)',
   async scan() {
@@ -43,6 +52,7 @@ export const steamImporter: Importer = {
           const title = text.match(/"name"\s+"([^"]+)"/)?.[1]
           const installDir = text.match(/"installdir"\s+"([^"]+)"/)?.[1]
           if (!appId || !title) throw new Error('manifest is missing its app ID or title')
+          if (!steamStateFlagsIndicateInstalled(text)) continue
           const cover = `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/library_600x900.jpg`
           games.push({
             id: `steam:${appId}`, title, store: 'Steam', cover, defaultCover: cover,

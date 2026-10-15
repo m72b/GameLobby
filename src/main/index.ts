@@ -1,10 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { allGames, database, emulatorProfiles, getLibraryConnectionValues, getSettings, markGamePlayed, mergeGames, putLibraryConnectionValues, putSettings, reconcileInstalledSource, reconcileOwnedSource, removeGame, resetPlaytime, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
+import { allGames, database, emulatorProfiles, getGame, getLibraryConnectionValues, getSettings, markGamePlayed, mergeGames, putLibraryConnectionValues, putSettings, reconcileInstalledSource, reconcileOwnedSource, removeGame, resetPlaytime, restoreBackup, saveEmulator, saveGame, upsertImportedGames } from './db'
 import { steamImporter, steamOwnedImporter } from './importers/steam'
 import { epicImporter, epicLegendaryImporter } from './importers/epic'
 import { gogImporter } from './importers/gog'
@@ -13,6 +13,8 @@ import { xboxImporter } from './importers/xbox'
 import { loadRemoteTheme } from './themes/loader'
 import { watchGameProcess } from './process-tracker'
 import { getSteamApiKey, hasSteamApiKey, setSteamApiKey } from './secrets'
+import { validateLaunchUri } from './security'
+import { backupSchema, emulatorProfileSchema, libraryConnectionSchema, librarySaveSchema, pluginManifestSchema, settingsPatchSchema, httpsUrlSchema } from './validation'
 import type { Game, LibraryConnectionInput, LibraryConnections } from '../shared/types'
 import { defaultTheme } from '../shared/defaults'
 
@@ -176,7 +178,7 @@ async function launchGame(game: Game, routeIndex = 0) {
   const route = game.routes[routeIndex]
   if (!route) throw new Error('No launch route is configured.')
   if (route.launchTarget.includes('://')) {
-    await shell.openExternal(route.launchTarget)
+    await shell.openExternal(validateLaunchUri(route.launchTarget))
   } else if (route.launchTarget.startsWith('shell:AppsFolder\\')) {
     await spawnDetached('explorer.exe', [route.launchTarget])
   } else if (route.launchArgs) {
@@ -207,30 +209,30 @@ function registerIpc() {
   handle('library:list', () => allGames())
   handle('library:scan', () => scanLibraries())
   handle('library:connections', () => libraryConnections())
-  handle('library:saveConnections', (_event, input: LibraryConnectionInput) => saveLibraryConnections(input))
+  handle('library:saveConnections', (_event, input: LibraryConnectionInput) => saveLibraryConnections(libraryConnectionSchema.parse(input)))
   handle('library:chooseLegendary', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Legendary executable', extensions: ['exe'] }] }); return result.canceled ? null : result.filePaths[0] || null })
   handle('library:chooseGogDatabase', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'SQLite database', extensions: ['db', 'sqlite', 'sqlite3'] }] }); return result.canceled ? null : result.filePaths[0] || null })
-  handle('library:launch', async (_event, id: string, route = 0) => { const game = allGames().find(entry => entry.id === id); if (!game) throw new Error('Game not found.'); return launchGame(game, route) })
-  handle('library:save', (_event, game: Partial<Game> & { id: string }) => saveGame(game))
+  handle('library:launch', async (_event, id: string, route = 0) => { const game = getGame(id); if (!game) throw new Error('Game not found.'); if (!Number.isInteger(route) || route < 0 || route >= 128) throw new Error('Launch route is invalid.'); return launchGame(game, route) })
+  handle('library:save', (_event, game: Partial<Game> & { id: string }) => saveGame(librarySaveSchema.parse(game)))
   handle('library:merge', (_event, targetId: string, sourceId: string) => mergeGames(targetId, sourceId))
   handle('library:remove', (_event, id: string) => removeGame(id))
   handle('library:resetPlaytime', () => { const games = resetPlaytime(); notifyLibraryChanged(); return games })
   handle('library:add', (_event, title: string, target: string) => saveGame({ id: `custom:${randomUUID()}`, title, store: 'Custom', playtimeMinutes: 0, hidden: false, favorite: false, routes: [{ sourceId: 'custom', store: 'Custom', launchTarget: target, installed: true }] }))
-  handle('library:cover', (_event, id: string, dataUrl: string | null) => { const game = allGames().find(entry => entry.id === id); if (!game) throw new Error('Game not found.'); return saveGame({ ...game, cover: dataUrl ? dataUrlCover(id, dataUrl) : game.defaultCover }) })
-  handle('library:chooseCover', async (_event, id: string) => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif'] }] }); if (result.canceled || !result.filePaths[0]) return allGames(); const game = allGames().find(entry => entry.id === id); if (game) { const source = result.filePaths[0], ext = extname(source) || '.jpg', name = safeCoverName(id, ext); mkdirSync(coverRoot(), { recursive: true }); require('node:fs').copyFileSync(source, join(coverRoot(), name)); saveGame({ ...game, cover: `lobby-cover://${encodeURIComponent(name)}` }) } return allGames() })
-  handle('library:folder', async (_event, id: string) => { const game = allGames().find(entry => entry.id === id), folder = game?.routes.find(route => route.installPath)?.installPath; if (folder && existsSync(folder)) await shell.openPath(folder) })
+  handle('library:cover', (_event, id: string, dataUrl: string | null) => { const game = getGame(id); if (!game) throw new Error('Game not found.'); return saveGame({ ...game, cover: dataUrl ? dataUrlCover(id, dataUrl) : game.defaultCover }) })
+  handle('library:chooseCover', async (_event, id: string) => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif'] }] }); if (result.canceled || !result.filePaths[0]) return allGames(); const game = getGame(id); if (game) { const source = result.filePaths[0], ext = extname(source) || '.jpg', name = safeCoverName(id, ext); mkdirSync(coverRoot(), { recursive: true }); copyFileSync(source, join(coverRoot(), name)); saveGame({ ...game, cover: `lobby-cover://${encodeURIComponent(name)}` }) } return allGames() })
+  handle('library:folder', async (_event, id: string) => { const game = getGame(id), folder = game?.routes.find(route => route.installPath)?.installPath; if (folder && existsSync(folder)) await shell.openPath(folder) })
   handle('settings:get', () => getSettings())
-  handle('settings:save', (_event, settings) => saveSettings(settings))
+  handle('settings:save', (_event, settings) => saveSettings(settingsPatchSchema.parse(settings)))
   handle('settings:open', () => openSettings())
-  handle('theme:load', async (_event, url: string) => { const theme = await loadRemoteTheme(url); return notifySettingsChanged(putSettings({ theme, themeUrl: url, themeName: theme.name })) })
+  handle('theme:load', async (_event, url: string) => { const safeUrl = httpsUrlSchema.parse(url); const theme = await loadRemoteTheme(safeUrl); return notifySettingsChanged(putSettings({ theme, themeUrl: safeUrl, themeName: theme.name })) })
   handle('theme:reset', () => notifySettingsChanged(putSettings({ theme: defaultTheme, themeUrl: undefined, themeName: undefined })))
   handle('emulators:list', () => emulatorProfiles())
-  handle('emulators:save', (_event, profile) => saveEmulator(profile))
+  handle('emulators:save', (_event, profile) => saveEmulator(emulatorProfileSchema.parse(profile)))
   handle('emulators:scan', () => ({ total: 0, scannedAt: Date.now() }))
   handle('plugins:list', () => database().prepare('SELECT manifest FROM plugins').all().map((row: any) => JSON.parse(row.manifest)))
-  handle('plugins:install', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Plugin manifests', extensions: ['json'] }] }); if (!result.canceled && result.filePaths[0]) { const manifest = JSON.parse(readFileSync(result.filePaths[0], 'utf8')); database().prepare('INSERT OR REPLACE INTO plugins(id,manifest) VALUES(?,?)').run(manifest.id, JSON.stringify(manifest)) }; return database().prepare('SELECT manifest FROM plugins').all().map((row: any) => JSON.parse(row.manifest)) })
+  handle('plugins:install', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Plugin manifests', extensions: ['json'] }] }); if (!result.canceled && result.filePaths[0]) { const path = result.filePaths[0]; if (statSync(path).size > 64 * 1024) throw new Error('Plugin manifest is too large.'); const manifest = pluginManifestSchema.parse(JSON.parse(readFileSync(path, 'utf8'))); database().prepare('INSERT OR REPLACE INTO plugins(id,manifest) VALUES(?,?)').run(manifest.id, JSON.stringify(manifest)) }; return database().prepare('SELECT manifest FROM plugins').all().map((row: any) => JSON.parse(row.manifest)) })
   handle('backup:export', async () => { const result = await dialog.showSaveDialog({ defaultPath: 'game-lobby-backup.json', filters: [{ name: 'JSON', extensions: ['json'] }] }); if (result.canceled || !result.filePath) return null; writeFileSync(result.filePath, JSON.stringify({ games: allGames(), settings: getSettings(), emulators: emulatorProfiles() }, null, 2)); return result.filePath })
-  handle('backup:import', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] }); if (result.canceled || !result.filePaths[0]) return 0; return restoreBackup(JSON.parse(readFileSync(result.filePaths[0], 'utf8'))) })
+  handle('backup:import', async () => { const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] }); if (result.canceled || !result.filePaths[0]) return 0; const path = result.filePaths[0]; if (statSync(path).size > 128 * 1024 * 1024) throw new Error('Backup file is too large.'); return restoreBackup(backupSchema.parse(JSON.parse(readFileSync(path, 'utf8')))) })
   handle('app:quit', () => app.quit())
 }
 

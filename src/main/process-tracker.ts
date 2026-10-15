@@ -51,7 +51,7 @@ async function poll() {
           }
         }
         watch.lastSeenAt = now
-      } else if (watch.startedAt && now - (watch.lastSeenAt || now) > 20_000) {
+      } else if (watch.startedAt && now - (watch.lastSeenAt || now) > 30_000) {
         watches.delete(key)
       } else if (!watch.startedAt && now - watch.requestedAt > 10 * 60_000) {
         watches.delete(key)
@@ -68,7 +68,7 @@ async function poll() {
 export function watchGameProcess(gameId: string, installPath?: string, onChanged?: () => void) {
   if (!getSettings().tracking || process.platform !== 'win32' || !installPath) return false
   watches.set(gameId, { gameId, installPath, requestedAt: Date.now(), onChanged })
-  if (!timer) { timer = setInterval(() => void poll(), 4_000); timer.unref() }
+  if (!timer) { timer = setInterval(() => void poll(), 15_000); timer.unref() }
   void poll()
   return true
 }

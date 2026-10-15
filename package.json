@@ -1,6 +1,6 @@
 {
   "name": "game-lobby",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "GPL-3.0-only",
   "private": true,
   "description": "A unified local game library and launcher",
@@ -9,6 +9,7 @@
     "predev": "npx install-electron --no",
     "dev": "electron-vite dev",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
     "build": "npm run typecheck && electron-vite build",
     "dist": "npm run build && electron-builder",
     "postinstall": "electron-builder install-app-deps"
@@ -33,6 +34,7 @@
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "tailwindcss": "^4.1.11",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.2",
     "vite": "^6.3.5"
   },

@@ -43,12 +43,21 @@ export function database() {
 }
 
 export function allGames(): Game[] {
-  return database().prepare('SELECT * FROM games ORDER BY title COLLATE NOCASE').all().map((r: any) => ({
+  return database().prepare('SELECT * FROM games ORDER BY title COLLATE NOCASE').all().map(mapGameRow)
+}
+
+function mapGameRow(r: any): Game {
+  return {
     id: r.id, title: r.title, cover: r.cover || undefined, defaultCover: r.defaultCover || undefined,
     store: r.store, genre: r.genre || undefined, playtimeMinutes: Math.floor((r.playtimeSeconds ?? r.playtimeMinutes * 60) / 60),
     playtimeSeconds: r.playtimeSeconds ?? r.playtimeMinutes * 60, lastPlayed: r.lastPlayed || undefined,
     hidden: !!r.hidden, favorite: !!r.favorite, routes: JSON.parse(r.routes || '[]')
-  }))
+  }
+}
+
+export function getGame(id: string): Game | undefined {
+  const row = database().prepare('SELECT * FROM games WHERE id=?').get(id)
+  return row ? mapGameRow(row) : undefined
 }
 
 function persistGame(game: Partial<Game> & { id: string }) {
